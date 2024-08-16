@@ -5,7 +5,6 @@ import streamlit as st
 from userDB import UserAuth
 from datetime import datetime
 import requests
-from langchain.embeddings import HuggingFaceEmbeddings as hfe
 import streamlit as st
 from langchain_community.llms import Ollama
 from langchain.text_splitter import RecursiveCharacterTextSplitter as rcts
@@ -25,9 +24,7 @@ st.set_page_config(page_title="RAG Streamlit Application", layout="wide")
 
 # Initialize global variables
 llm = Ollama(model="llama3")
-
 embedding = fee()
-
 text_splitter = rcts(
     chunk_size=2048,
     chunk_overlap=200,
