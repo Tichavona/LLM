@@ -1,9 +1,8 @@
 from dotenv import load_dotenv
 import os
-import pyodbc
+import sqlite3
 import streamlit as st
-from urllib.parse import quote_plus
-from userManagement import UserAuth
+from userDB import UserAuth
 from datetime import datetime
 import requests
 import subprocess
@@ -13,17 +12,10 @@ import threading
 load_dotenv()
 
 # Read database configuration from environment variables
-db_driver = os.getenv('DB_DRIVER')
-db_server = os.getenv('DB_SERVER')
-db_name = os.getenv('DB_NAME')
-db_username = os.getenv('DB_USERNAME')
-db_password = os.getenv('DB_PASSWORD')
-
-# Construct the database connection string
-db_conn_str = f"DRIVER={db_driver};SERVER={db_server};DATABASE={db_name};UID={db_username};PWD={db_password}"
+db_file = os.getenv('DB_FILE', 'user_database.db')
 
 # Initialize UserAuth
-auth = UserAuth(db_conn_str=db_conn_str)
+auth = UserAuth(db_file=db_file)
 
 # Function to start the Flask app
 def start_flask_app():
@@ -51,16 +43,16 @@ def get_location_data():
 
 # Function to save location data to the database
 def save_location_data(user_id, status, geo_data, ip):
-    conn = pyodbc.connect(db_conn_str)
+    conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
     
     coordinates = geo_data.get('loc') if geo_data else None
-    event_time = datetime.now()
+    event_time = datetime.now().isoformat()  # Use ISO format for datetime
     
     cursor.execute("""
         INSERT INTO UserLocationData (user_id, status, event_time, geolocation_coordinates, ip_address)
         VALUES (?, ?, ?, ?, ?)
-    """, user_id, status, event_time, coordinates, ip)
+    """, (user_id, status, event_time, coordinates, ip))
     
     conn.commit()
     cursor.close()
