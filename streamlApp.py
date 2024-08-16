@@ -19,7 +19,7 @@ auth = UserAuth(db_file=db_file)
 
 # Function to start the Flask app
 def start_flask_app():
-    subprocess.run(["python", "./RAG-main/flaskApp.py"])
+    subprocess.run(["python", "./CorporateGPT2/RAG-main/flaskApp.py"])
 
 # Function to run the Flask app in a separate thread
 def run_flask_thread():
