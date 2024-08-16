@@ -26,8 +26,7 @@ st.set_page_config(page_title="RAG Streamlit Application", layout="wide")
 # Initialize global variables
 llm = Ollama(model="llama3")
 
-# Replace the embedding initialization
-embedding = hfe(model_name="bert-base-uncased")
+embedding = fee()
 
 text_splitter = rcts(
     chunk_size=2048,
