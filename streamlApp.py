@@ -5,8 +5,171 @@ import streamlit as st
 from userDB import UserAuth
 from datetime import datetime
 import requests
-import subprocess
-import threading
+from langchain.embeddings import HuggingFaceEmbeddings as hfe
+import streamlit as st
+from langchain_community.llms import Ollama
+from langchain.text_splitter import RecursiveCharacterTextSplitter as rcts
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings as fee
+from langchain_community.document_loaders import PDFPlumberLoader as pdfPL
+from langchain_community.vectorstores import Chroma
+from langchain.chains.combine_documents import create_stuff_documents_chain as csdc
+from langchain.chains import create_retrieval_chain as crc
+from langchain.prompts import PromptTemplate as pt
+from docx import Document as DocxDocument
+from langchain.docstore.document import Document
+import pandas as pd
+from pptx import Presentation
+
+# Set up Streamlit page
+st.set_page_config(page_title="RAG Streamlit Application", layout="wide")
+
+# Initialize global variables
+llm = Ollama(model="llama3")
+
+# Replace the embedding initialization
+embedding = hfe(model_name="bert-base-uncased")
+
+text_splitter = rcts(
+    chunk_size=2048,
+    chunk_overlap=200,
+    length_function=len,
+    is_separator_regex='\n'
+)
+
+# Ensure the database directory exists or create it
+dbDirectory = r".\CorporateGPT2\db"
+if not os.path.exists(dbDirectory):
+    os.makedirs(dbDirectory)
+
+rawPrompt = pt.from_template(
+    """ 
+<s>[INST] You are an expert technical information searching assistant. If the provided information does not have a clear answer, say "I do not have enough information to answer that." [/INST]</s>
+[INST] {input}
+        Context: {context}
+        Answer:
+[/INST]
+"""
+)
+
+class Document:
+    def __init__(self, text, metadata=None):
+        self.page_content = text
+        self.metadata = metadata or {}
+
+# Define functions for each endpoint
+def ai_post(query):
+    response = llm.invoke(query)
+    if "I do not have enough information" in response or "I cannot answer" in response:
+        return {"response": "The information provided is insufficient to answer your query accurately."}
+    else:
+        return {"response": response}
+
+def db_query(query):
+    vectorStore = Chroma(persist_directory=dbDirectory, embedding_function=embedding)
+    retriever = vectorStore.as_retriever(
+        search_type="similarity_score_threshold",
+        search_kwargs={"k": 5, "score_threshold": 0.01}
+    )
+    documentChain = csdc(llm, rawPrompt)
+    chain = crc(retriever, documentChain)
+    result = chain.invoke({"input": query})
+
+    sources = []
+    for doc in result['context']:
+        if 'source' in doc.metadata:
+            sources.append({
+                'source': doc.metadata['source'],
+                'Page number': doc.metadata['page'],
+                "Page Content": doc.page_content[:50] + "..."
+            })
+
+    return {"answer": result['answer'], "sources": sources}
+
+def uploads(files):
+    responses = []
+    all_chunks = []
+
+    for file in files:
+        fileName = file.name.lower()
+        file_extension = fileName.split('.')[-1]
+        save_directory = None
+
+        if file_extension == 'pdf':
+            save_directory = r".\CorporateGPT2\pdfUploads"
+        elif file_extension in ['doc', 'docx']:
+            save_directory = r".\CorporateGPT2\wordUploads"
+        elif file_extension in ['xls', 'xlsx']:
+            save_directory = r".\CorporateGPT2\excelUploads"
+        elif file_extension in ['ppt', 'pptx']:
+            save_directory = r".\CorporateGPT2\powerpointUploads"
+        else:
+            responses.append({
+                "Status": "Unsupported file type",
+                "File name": fileName
+            })
+            continue
+
+        if not os.path.exists(save_directory):
+            os.makedirs(save_directory)
+
+        saveFile = os.path.join(save_directory, fileName)
+        try:
+            with open(saveFile, "wb") as f:
+                f.write(file.getbuffer())
+            docs = []
+            num_pages_or_sheets = 0
+            if file_extension == 'pdf':
+                loader = pdfPL(saveFile)
+                docs = loader.load_and_split()
+                num_pages_or_sheets = len(docs)
+            elif file_extension in ['doc', 'docx']:
+                doc = DocxDocument(saveFile)
+                texts = [p.text for p in doc.paragraphs if p.text.strip()]
+                docs = [Document(text) for text in texts]
+                num_pages_or_sheets = len(docs)
+            elif file_extension in ['xls', 'xlsx']:
+                excel = pd.ExcelFile(saveFile)
+                for sheet_name in excel.sheet_names:
+                    sheet_df = pd.read_excel(excel, sheet_name=sheet_name)
+                    sheet_text = sheet_df.to_string()
+                    docs.append(Document(sheet_text))
+                num_pages_or_sheets = len(excel.sheet_names)
+            elif file_extension in ['ppt', 'pptx']:
+                presentation = Presentation(saveFile)
+                for slide in presentation.slides:
+                    slide_text = "\n".join([shape.text for shape in slide.shapes if hasattr(shape, "text")])
+                    if slide_text.strip():
+                        docs.append(Document(slide_text))
+                num_pages_or_sheets = len(presentation.slides)
+
+            chunks = text_splitter.split_documents(docs)
+            all_chunks.extend(chunks)
+
+            response = {
+                "Status": "Successfully uploaded",
+                "File name": fileName,
+                "Number of pages or sheets": num_pages_or_sheets,
+                "Number of chunks": len(chunks)
+            }
+            responses.append(response)
+
+        except Exception as e:
+            responses.append({
+                "Status": "Failed to save file",
+                "File name": fileName,
+                "Error": str(e)
+            })
+
+    return all_chunks, responses
+
+def save_to_db(files):
+    chunks, response = uploads(files)
+    vectorStore = Chroma.from_documents(documents=chunks, embedding=embedding, persist_directory=dbDirectory)
+    vectorStore.persist()
+    # Add database upload status to the response
+    for i in range(0, len(response)):
+        response[i]['Status'] = "Successfully uploaded into Vector database"
+    return response
 
 # Load environment variables from .env file
 load_dotenv()
@@ -16,16 +179,6 @@ db_file = os.getenv('DB_FILE', 'user_database.db')
 
 # Initialize UserAuth
 auth = UserAuth(db_file=db_file)
-
-# Function to start the Flask app
-def start_flask_app():
-    subprocess.run(["python", "./CorporateGPT2/RAG-main/flaskApp.py"])
-
-# Function to run the Flask app in a separate thread
-def run_flask_thread():
-    flask_thread = threading.Thread(target=start_flask_app)
-    flask_thread.daemon = True
-    flask_thread.start()
 
 # Automatically get location data
 def get_location_data():
@@ -57,9 +210,6 @@ def save_location_data(user_id, status, geo_data, ip):
     conn.commit()
     cursor.close()
     conn.close()
-
-# Start Flask app
-run_flask_thread()
 
 # Main application logic
 if 'authenticated' not in st.session_state:
@@ -104,15 +254,9 @@ if st.session_state.authenticated:
             files.append(('file', file))
 
         # Upload the document to the Flask server
-        response = requests.post("http://127.0.0.1:8080/saveDB", files=files)
-        response_data = response.json()
-        system_status = response.status_code
+        response = save_to_db(files)
 
-        if system_status == 200:
-            st.sidebar.success("File uploaded successfully!")
-            st.sidebar.write(response_data)
-        else:
-            st.sidebar.error("Failed to upload the file.")
+        st.sidebar.write(response)
 
     # Main Page: LLM Chat Interface
     st.title("LLM Chat Interface")
@@ -148,39 +292,25 @@ if st.session_state.authenticated:
     if send_button:
         if user_input:
             # Choose between vector database or general model based on user input
-            if mode == "Vector Database":
-                endpoint = "http://127.0.0.1:8080/dbQuerying"
-            
-                response = requests.post(endpoint, json={"query": user_input})
-                
-                if response.status_code == 200:
-                    response_data = response.json()
-                    llm_response = response_data.get("answer", "No response from LLM")
-                    sources = response_data.get("sources", [])
-                    
-                    # Append to chat history
-                    st.session_state.chat_history.append({"user": user_input, "llm": llm_response, "sources": sources})
+            if mode == "Vector Database":            
+                answer_data = db_query(user_input)
+                answer = answer_data['answer']
+                sources = answer_data['sources']
 
-                    # Clear the input box after sending
-                    display_chat_history()
-                    st.rerun()  # Refresh the app to show the updated chat history
-                else:
-                    st.error("Failed to get a response from the model.")
+                st.session_state.chat_history.append({"user": user_input, "llm": answer, "sources": sources})
+
+                # Clear the input box after sending
+                display_chat_history()
+                st.rerun()  # Refresh the app to show the updated chat history
 
             else:
-                endpoint = "http://127.0.0.1:8080/ai"
-                response = requests.post(endpoint, json={"query": user_input})
-                
-                if response.status_code == 200:
-                    response_data = response.json()
-                    llm_response = response_data['response']
-                    # Append to chat history
-                    st.session_state.chat_history.append({"user": user_input, "llm": llm_response})
-                    # Display the updated chat history
-                    display_chat_history()
-                    st.rerun()  # This ensures the updated chat history is immediately displayed
-                else:
-                    st.error("Failed to get a response from the model.")
+                response = ai_post(user_input)
+
+                st.session_state.chat_history.append({"user": user_input, "llm": response['response']})
+
+                # Clear the input box after sending
+                display_chat_history()
+                st.rerun()  # Refresh the app to show the updated chat history
 
     # Option to clear chat history
     if st.button("Clear Chat History"):
