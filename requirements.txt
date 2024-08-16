@@ -74,6 +74,7 @@ numpy==1.26.4
 oauthlib==3.2.2
 onnx==1.16.0
 onnxruntime==1.17.3
+ollama
 openpyxl==3.1.5
 opentelemetry-api==1.24.0
 opentelemetry-exporter-otlp-proto-common==1.24.0
